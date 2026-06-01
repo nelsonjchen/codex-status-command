@@ -1,0 +1,12 @@
+╭──────────────────────── Status ────────────────────────╮
+│ codex-cli 0.128.0                                       │
+│ Account: crazysim@gmail.com (Pro)                       │
+│ Model: gpt-5.5 (reasoning high, summaries auto)         │
+│                                                         │
+│ 5h limit: 100% left (resets 14:44)                      │
+│ Weekly limit: 70% left (resets 08:23 on 7 Jun)          │
+│                                                         │
+│ GPT-5.3-Codex-Spark limit:                              │
+│ 5h limit: 100% left (resets 14:47)                      │
+│ Weekly limit: 100% left (resets 09:47 on 8 Jun)         │
+╰─────────────────────────────────────────────────────────╯
