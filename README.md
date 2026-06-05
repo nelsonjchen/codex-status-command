@@ -23,11 +23,14 @@ codex-status-json
 ```sh
 codex-status-json
 codex-status-json --backend app-server
+codex-status-json --backend auto
 codex-status-json --backend pty
 codex-status-json --timeout-ms 30000
 ```
 
-Default mode is `--backend auto`: try `codex app-server` JSON-RPC first, then fall back to opening the interactive TUI in a PTY and running `/status`.
+Default mode is `--backend app-server`, which uses Codex's JSON-RPC interface and never opens the TUI.
+
+`--backend auto` tries `codex app-server` JSON-RPC first, then falls back to opening the interactive TUI in a PTY and running `/status`.
 
 Example output:
 

@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -62,7 +62,7 @@ enum Backend {
 impl Args {
     fn parse() -> Result<Self> {
         let mut timeout = DEFAULT_TIMEOUT;
-        let mut backend = Backend::Auto;
+        let mut backend = Backend::AppServer;
         let mut parse_fixture = None;
         let mut debug_dump = None;
         let mut args = std::env::args().skip(1);
@@ -71,6 +71,10 @@ impl Args {
             match arg.as_str() {
                 "-h" | "--help" => {
                     print_help();
+                    std::process::exit(0);
+                }
+                "-V" | "--version" => {
+                    println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
                     std::process::exit(0);
                 }
                 "--timeout-ms" => {
@@ -120,10 +124,10 @@ fn print_help() {
 codex-status-json
 
 Usage:
-  codex-status-json [--backend auto|app-server|pty] [--timeout-ms 20000]
+  codex-status-json [--backend app-server|auto|pty] [--timeout-ms 20000]
   codex-status-json --parse-fixture path/to/status.txt
 
-Prints Codex account/quota JSON. Defaults to app-server JSON-RPC with PTY /status fallback.
+Prints Codex account/quota JSON. Defaults to app-server JSON-RPC.
 "
     );
 }
@@ -338,6 +342,7 @@ struct AppServerRpc {
     child: Child,
     stdin: ChildStdin,
     rx: mpsc::Receiver<Result<Value, String>>,
+    stderr: Arc<Mutex<String>>,
     next_id: u64,
 }
 
@@ -347,7 +352,7 @@ impl AppServerRpc {
             .args(["app-server", "--listen", "stdio://", "-c", "mcp_servers={}"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("failed to start `codex app-server --listen stdio://`")?;
 
@@ -359,7 +364,13 @@ impl AppServerRpc {
             .stdout
             .take()
             .context("failed to open app-server stdout")?;
+        let mut stderr_reader = child
+            .stderr
+            .take()
+            .context("failed to open app-server stderr")?;
         let (tx, rx) = mpsc::channel();
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr_for_thread = Arc::clone(&stderr);
 
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -382,10 +393,21 @@ impl AppServerRpc {
             }
         });
 
+        thread::spawn(move || {
+            let mut text = String::new();
+            let _ = stderr_reader.read_to_string(&mut text);
+            if !text.trim().is_empty() {
+                if let Ok(mut stderr) = stderr_for_thread.lock() {
+                    *stderr = text;
+                }
+            }
+        });
+
         Ok(Self {
             child,
             stdin,
             rx,
+            stderr,
             next_id: 1,
         })
     }
@@ -406,11 +428,21 @@ impl AppServerRpc {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .context("timed out waiting for app-server response")?;
-            let value = self
-                .rx
-                .recv_timeout(remaining)
-                .with_context(|| format!("timed out waiting for app-server response to {method}"))?
-                .map_err(anyhow::Error::msg)?;
+            let value = match self.rx.recv_timeout(remaining) {
+                Ok(value) => value.map_err(anyhow::Error::msg)?,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    anyhow::bail!(
+                        "timed out waiting for app-server response to {method}{}",
+                        self.stderr_suffix()
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!(
+                        "app-server exited before responding to {method}{}",
+                        self.stderr_suffix()
+                    );
+                }
+            };
             if value.get("id").and_then(Value::as_u64) != Some(id) {
                 continue;
             }
@@ -434,6 +466,20 @@ impl AppServerRpc {
     fn shutdown(&mut self) {
         self.child.kill().ok();
         self.child.wait().ok();
+    }
+
+    fn stderr_suffix(&self) -> String {
+        let stderr = self
+            .stderr
+            .lock()
+            .ok()
+            .map(|stderr| stderr.trim().to_string())
+            .unwrap_or_default();
+        if stderr.is_empty() {
+            String::new()
+        } else {
+            format!("; app-server stderr: {stderr}")
+        }
     }
 }
 
