@@ -15,6 +15,109 @@ use codex_status_json::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal usable quota response with optional reset metadata.
+    fn status_with_resets(summary: Option<Value>) -> Result<Value> {
+        let mut limits = json!({
+            "rateLimits": {
+                "primary": {"usedPercent": 20, "windowDurationMins": 300, "resetsAt": 1780350290}
+            }
+        });
+        if let Some(summary) = summary {
+            limits["rateLimitResetCredits"] = summary;
+        }
+        Ok(serde_json::to_value(status_from_app_server_values(
+            &json!({}),
+            &limits,
+            None,
+        )?)?)
+    }
+
+    /// Preserve credit metadata, unknown future strings, and nullable fields.
+    #[test]
+    fn includes_banked_reset_details() {
+        let status = status_with_resets(Some(json!({
+            "availableCount": 2,
+            "credits": [
+                {"id": "a", "resetType": "codexRateLimits", "status": "available",
+                 "grantedAt": 1780350290, "expiresAt": 1782942290,
+                 "title": "Full reset", "description": "Promotional reset"},
+                {"id": "b", "resetType": "futureType", "status": "futureStatus",
+                 "grantedAt": 1780350291, "expiresAt": null,
+                 "title": null, "description": null}
+            ]
+        })))
+        .unwrap();
+        assert_eq!(
+            status["banked_resets"],
+            json!({
+                "available_count": 2,
+                "credits": [
+                    {"id": "a", "reset_type": "codexRateLimits", "status": "available",
+                     "granted_at_unix": 1780350290, "expires_at_unix": 1782942290,
+                     "title": "Full reset", "description": "Promotional reset"},
+                    {"id": "b", "reset_type": "futureType", "status": "futureStatus",
+                     "granted_at_unix": 1780350291, "expires_at_unix": null,
+                     "title": null, "description": null}
+                ]
+            })
+        );
+        assert_eq!(status["schema_version"], 1);
+    }
+
+    /// Unknown summaries must not be mistaken for a known zero balance.
+    #[test]
+    fn omits_unavailable_banked_resets() {
+        for summary in [None, Some(Value::Null)] {
+            assert!(
+                status_with_resets(summary)
+                    .unwrap()
+                    .get("banked_resets")
+                    .is_none()
+            );
+        }
+    }
+
+    /// Preserve count-only, empty, and capped-detail responses distinctly.
+    #[test]
+    fn preserves_reset_detail_availability() {
+        for (count, credits) in [(3, Value::Null), (0, json!([])), (3, json!([]))] {
+            let status = status_with_resets(Some(json!({
+                "availableCount": count, "credits": credits
+            })))
+            .unwrap();
+            assert_eq!(status["banked_resets"]["available_count"], count);
+            assert_eq!(status["banked_resets"]["credits"], credits);
+        }
+    }
+
+    /// Reject malformed balances instead of silently reporting misleading data.
+    #[test]
+    fn rejects_invalid_reset_summary() {
+        let err =
+            status_with_resets(Some(json!({"availableCount": -1, "credits": []}))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid app-server banked reset data")
+        );
+    }
+
+    /// PTY parsing cannot infer the banked-reset balance from quota windows.
+    #[test]
+    fn pty_omits_banked_resets() {
+        let status = parse_status_text(include_str!("../fixtures/status-panel.txt")).unwrap();
+        assert!(
+            serde_json::to_value(status)
+                .unwrap()
+                .get("banked_resets")
+                .is_none()
+        );
+    }
+}
+
 const ROWS: u16 = 50;
 const COLS: u16 = 160;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -176,6 +279,7 @@ fn capture_status_app_server(timeout: Duration) -> Result<CodexStatus> {
     Ok(status)
 }
 
+/// Convert read-only account responses, preserving optional banked-reset metadata.
 fn status_from_app_server_values(
     account_value: &Value,
     rate_limits_value: &Value,
@@ -267,6 +371,12 @@ fn status_from_app_server_values(
         account,
         model,
         buckets,
+        banked_resets: rate_limits_value
+            .get("rateLimitResetCredits")
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .context("invalid app-server banked reset data")?,
     })
 }
 
