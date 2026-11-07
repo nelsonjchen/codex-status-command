@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CodexStatus {
@@ -9,6 +9,31 @@ pub struct CodexStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<Model>,
     pub buckets: Vec<QuotaBucket>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banked_resets: Option<BankedResets>,
+}
+
+/// Read-only reset balance; unavailable details differ from a known empty list.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct BankedResets {
+    #[serde(rename(deserialize = "availableCount"))]
+    pub available_count: u64,
+    pub credits: Option<Vec<ResetCredit>>,
+}
+
+/// An available reset credit with backend-provided metadata and Unix seconds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ResetCredit {
+    pub id: String,
+    #[serde(rename(deserialize = "resetType"))]
+    pub reset_type: String,
+    pub status: String,
+    #[serde(rename(deserialize = "grantedAt"))]
+    pub granted_at_unix: i64,
+    #[serde(rename(deserialize = "expiresAt"))]
+    pub expires_at_unix: Option<i64>,
+    pub title: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,6 +89,7 @@ pub fn parse_status_text(input: &str) -> anyhow::Result<CodexStatus> {
         account,
         model,
         buckets,
+        banked_resets: None,
     })
 }
 

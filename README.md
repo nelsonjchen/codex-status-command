@@ -71,6 +71,31 @@ Example output:
 
 The PTY backend omits `reset_at_unix` because `/status` renders reset times as text.
 
+The app-server backend also includes `banked_resets` when Codex provides a reset-credit summary:
+
+```json
+{
+  "banked_resets": {
+    "available_count": 1,
+    "credits": [
+      {
+        "id": "example-credit",
+        "reset_type": "codexRateLimits",
+        "status": "available",
+        "granted_at_unix": 1780350290,
+        "expires_at_unix": 1782942290,
+        "title": "Full reset",
+        "description": null
+      }
+    ]
+  }
+}
+```
+
+`credits: null` means details are unavailable; `credits: []` means details were fetched but no available credits were returned. The backend may return fewer details than `available_count`. A null `expires_at_unix` means the credit does not expire. Title and description may also be null. These reads never redeem or consume resets.
+
+Older Codex versions that do not return a summary, and the PTY backend, omit `banked_resets` rather than reporting a zero balance. This optional addition retains `schema_version: 1`.
+
 ## Backends
 
 `app-server` starts `codex app-server --listen stdio://` and calls:
